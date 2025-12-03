@@ -292,10 +292,9 @@ async def finalize_message(bot, chat_id, message_id, mode, caption, keyboard=Non
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name if update.effective_user else "friend"
     await update.message.reply_text(
-        f"👋 <b>Hey {user_name}.</b>\n\n"
-        "I'm your sarcastic game-finding assistant.\n"
-        "I search <b>GameBounty</b>, <b>Anker</b> & <b>SteamUnderground</b>.\n\n"
-        "👇 <b>Command:</b>\n"
+        f"<b>Hey {user_name}.</b>\n\n"
+        "I search the internet for games so u don't have to.\n\n"
+        "<b>Usage:</b>\n"
         "<code>/search elden ring</code>",
         parse_mode=constants.ParseMode.HTML,
     )
