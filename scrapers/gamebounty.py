@@ -163,6 +163,7 @@ async def get_game_details(session, basic_data):
 
         return {
             "title": basic_data["title"],
+            "source": "GameBounty",
             "url": f"{BASE_URL}/download/{slug}",  # Public URL
             "cover_image": basic_data["cover_image"],
             "version": basic_data["version"],
