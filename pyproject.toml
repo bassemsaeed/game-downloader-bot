@@ -1,0 +1,14 @@
+[project]
+name = "telegram-bot-for-games"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "aiohttp>=3.13.2",
+    "beautifulsoup4>=4.14.3",
+    "cloudscraper>=1.2.71",
+    "python-dotenv>=1.2.1",
+    "python-telegram-bot>=22.5",
+    "requests>=2.32.5",
+]
