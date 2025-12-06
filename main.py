@@ -1,10 +1,11 @@
-# sarcastic_tele_bot_modern.py
+# sarcastic_tele_bot_inline_v2.py
 import logging
 import asyncio
 import random
 import os
 import re
 import math
+import uuid
 from dotenv import load_dotenv
 from collections import Counter
 
@@ -16,6 +17,8 @@ from telegram import (
     InputMediaAnimation,
     InputFile,
     BotCommand,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
 )
 from telegram.ext import (
     Application,
@@ -23,18 +26,18 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     ApplicationBuilder,
+    InlineQueryHandler,
 )
 from telegram.request import HTTPXRequest
 
 # --- IMPORTS: Your scrapers ---
-# Ensure 'scrapers' folder exists with steamuground.py, ankergames.py, gamebounty.py
 from scrapers import steamuground, ankergames, gamebounty
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # --- CONFIG ---
-PAGE_SIZE = 8  # Reduced slightly to fit modern screens better
+PAGE_SIZE = 8
 TOKEN = BOT_TOKEN
 
 # Setup logging
@@ -75,14 +78,12 @@ TOASTS = [
 
 # --- HELPERS ---
 def _sanitize_callback(text: str) -> str:
-    """Sanitizes text for callback data to fit Telegram limits."""
     s = re.sub(r"\s+", "_", text)
     s = re.sub(r"[^0-9A-Za-z_\-]", "", s)
-    return s[:32]  # Aggressive truncation for safety
+    return s[:32]
 
 
 def _find_source_by_sanitized(results, sanitized):
-    """Reconstructs source name from sanitized string."""
     for r in results:
         src = r.get("source", "Unknown")
         if _sanitize_callback(src) == sanitized:
@@ -96,7 +97,6 @@ def build_providers_keyboard(results):
     counts = Counter(sources)
     keyboard = []
 
-    # Header styling
     for source, count in counts.items():
         if "anker" in source.lower():
             icon = "⚓"
@@ -112,7 +112,6 @@ def build_providers_keyboard(results):
 
 
 def build_paginated_game_list(results, target_source, page=0):
-    # Filter games
     source_games = []
     for idx, g in enumerate(results):
         if g.get("source") == target_source:
@@ -121,7 +120,6 @@ def build_paginated_game_list(results, target_source, page=0):
     total_items = len(source_games)
     total_pages = math.ceil(total_items / PAGE_SIZE)
 
-    # Bounds check
     if page >= total_pages:
         page = total_pages - 1
     if page < 0:
@@ -135,19 +133,15 @@ def build_paginated_game_list(results, target_source, page=0):
 
     keyboard = []
 
-    # List items
     for item in current_items:
         game = item["game"]
         real_idx = item["original_index"]
-
         title = game.get("title", "Untitled").replace("Free Download", "").strip()
         title = title[:28] + ".." if len(title) > 28 else title
-
         keyboard.append(
             [InlineKeyboardButton(f"👾 {title}", callback_data=f"v_{real_idx}_{page}")]
         )
 
-    # Navigation Row
     nav_row = []
     sanitized_source = _sanitize_callback(target_source)
 
@@ -158,20 +152,17 @@ def build_paginated_game_list(results, target_source, page=0):
                     "⬅️", callback_data=f"ls_{sanitized_source}_{page - 1}"
                 )
             )
-
         nav_row.append(
             InlineKeyboardButton(
                 f"• {page + 1} / {total_pages} •", callback_data="noop"
             )
         )
-
         if page < total_pages - 1:
             nav_row.append(
                 InlineKeyboardButton(
                     "➡️", callback_data=f"ls_{sanitized_source}_{page + 1}"
                 )
             )
-
         keyboard.append(nav_row)
 
     keyboard.append(
@@ -180,7 +171,8 @@ def build_paginated_game_list(results, target_source, page=0):
     return InlineKeyboardMarkup(keyboard)
 
 
-def build_details_keyboard(game, download_links, return_page):
+def build_download_keyboard(download_links, include_back_btn=True, back_data=None):
+    """Refactored to be reusable for Inline mode (no back button needed there)."""
     keyboard = []
     row = []
 
@@ -215,60 +207,38 @@ def build_details_keyboard(game, download_links, return_page):
     if row:
         keyboard.append(row)
 
-    source = game.get("source", "Unknown")
-    sanitized_source = _sanitize_callback(source)
+    if include_back_btn and back_data:
+        keyboard.append(
+            [InlineKeyboardButton("🔙 Back to List", callback_data=back_data)]
+        )
 
-    keyboard.append(
-        [
-            InlineKeyboardButton(
-                "🔙 Back to List", callback_data=f"ls_{sanitized_source}_{return_page}"
-            )
-        ]
-    )
     return InlineKeyboardMarkup(keyboard)
 
 
 # --- MODERN FORMATTING ---
 def format_game_details(game):
-    """Uses modern HTML tags like blockquote and spoiler."""
     source = game.get("source", "Unknown")
     metadata = game.get("metadata", {})
     image_url = game.get("image") or game.get("cover_image") or ""
 
-    # Invisible Header Image
     img_html = (
         f'<a href="{image_url}">&#8205;</a>'
         if image_url and image_url.startswith("http")
         else ""
     )
-
     title = game.get("title", "Unknown").replace("Free Download", "").strip()
 
     if source == "AnkerGames":
         size = metadata.get("size", "N/A")
         rel_date = metadata.get("release_date", "N/A")
         genres = ", ".join(metadata.get("genres", [])[:3])
-        # Using Blockquote for metadata
-        meta_block = (
-            f"<blockquote>"
-            f"💾 <b>Size:</b> {size}\n"
-            f"📅 <b>Date:</b> {rel_date}\n"
-            f"🏷 <b>Genre:</b> {genres}"
-            f"</blockquote>"
-        )
+        meta_block = f"<blockquote>💾 <b>Size:</b> {size}\n📅 <b>Date:</b> {rel_date}\n🏷 <b>Genre:</b> {genres}</blockquote>"
         source_badge = "⚓ <b>AnkerGames</b>"
-
     elif source == "GameBounty":
         dev = metadata.get("developer", "N/A")
         ver = game.get("version") or metadata.get("version", "N/A")
         genres = ", ".join(metadata.get("genres", [])[:3])
-        meta_block = (
-            f"<blockquote>"
-            f"👨‍💻 <b>Dev:</b> {dev}\n"
-            f"🏷 <b>Genre:</b> {genres}\n"
-            f"💿 <b>Ver:</b> {ver}"
-            f"</blockquote>"
-        )
+        meta_block = f"<blockquote>👨‍💻 <b>Dev:</b> {dev}\n🏷 <b>Genre:</b> {genres}\n💿 <b>Ver:</b> {ver}</blockquote>"
         source_badge = "💎 <b>GameBounty</b>"
     else:
         group = metadata.get("release_group", "N/A")
@@ -278,10 +248,8 @@ def format_game_details(game):
         )
         source_badge = "🚂 <b>SteamUnderground</b>"
 
-    # System Requirements (Cleaned)
     reqs_data = game.get("system_requirements", [])
     reqs_clean = "<i>Check download page</i>"
-
     if isinstance(reqs_data, list) and reqs_data:
         reqs_clean = "\n".join([f"• {r}" for r in reqs_data[:5]])
     elif isinstance(reqs_data, dict) and reqs_data:
@@ -289,7 +257,6 @@ def format_game_details(game):
         clean_text = re.sub(r"<[^>]+>", "", raw_min).replace("Minimum:", "").strip()
         reqs_clean = clean_text[:400]
 
-    # COMPOSITION with Expandable Quotes and Spoilers
     text = (
         f"{img_html}\n"
         f"<b>{title}</b>\n"
@@ -307,7 +274,6 @@ async def finalize_message(bot, chat_id, message_id, mode, caption, keyboard=Non
     gif_path = f"{mode}.gif"
     fallback_url = "https://media.giphy.com/media/26FPqut4tYkz5v3Su/giphy.gif"
 
-    # Load media
     media_input = MEDIA_CACHE.get(mode)
     f_handle = None
 
@@ -328,12 +294,10 @@ async def finalize_message(bot, chat_id, message_id, mode, caption, keyboard=Non
             media=input_media,
             reply_markup=keyboard,
         )
-        # Cache file_id if successful and not cached
         if not MEDIA_CACHE.get(mode) and msg.animation:
             MEDIA_CACHE[mode] = msg.animation.file_id
 
     except Exception:
-        # Fallback if edit fails (e.g. message too old)
         try:
             await bot.delete_message(chat_id, message_id)
         except:
@@ -351,7 +315,6 @@ async def finalize_message(bot, chat_id, message_id, mode, caption, keyboard=Non
         )
         if not MEDIA_CACHE.get(mode) and msg.animation:
             MEDIA_CACHE[mode] = msg.animation.file_id
-
     finally:
         if f_handle:
             f_handle.close()
@@ -360,18 +323,21 @@ async def finalize_message(bot, chat_id, message_id, mode, caption, keyboard=Non
 # --- HANDLERS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user.first_name
-
-    # Interactive Start Button
     kb = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🔎 Search Now", switch_inline_query_current_chat="")]]
+        [
+            [
+                InlineKeyboardButton(
+                    "🔎 Search Inline", switch_inline_query_current_chat=""
+                )
+            ]
+        ]
     )
-
     await update.message.reply_text(
         f"<b>👋 Yo, {user}.</b>\n\n"
         "I'm your pirate librarian. I find games.\n\n"
         "<b>Commands:</b>\n"
-        "<code>/search name</code> - Find games\n"
-        "<code>/help</code> - Emotional support",
+        "<code>/search name</code> - Classic Search\n"
+        "<code>@BotName name</code> - Inline Search (Any chat)",
         reply_markup=kb,
         parse_mode=constants.ParseMode.HTML,
     )
@@ -386,13 +352,10 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     query = " ".join(context.args)
-
-    # 1. Send Loading GIF
     load_caption = (
         f"<b>{random.choice(LOADING_PHRASES)}</b>\n<code>Query: {query}</code>"
     )
 
-    # Try using cache first
     media = (
         MEDIA_CACHE.get("loading")
         or "https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif"
@@ -408,21 +371,17 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if msg.animation:
             MEDIA_CACHE["loading"] = msg.animation.file_id
 
-    # 2. Scrape Parallel
     tasks = [
         steamuground.run_scraper(query),
         ankergames.run_scraper(query),
         gamebounty.run_scraper(query),
     ]
-
-    # Using return_exceptions to prevent one failure killing all
     results_raw = await asyncio.gather(*tasks, return_exceptions=True)
     all_results = []
     for r in results_raw:
         if isinstance(r, list):
             all_results.extend(r)
 
-    # 3. Handle Results
     if not all_results:
         await finalize_message(
             context.bot,
@@ -434,14 +393,11 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     context.user_data["last_results"] = all_results
-
-    # 4. Success Response
     success_text = f"🎉 <b>Success.</b> Found {len(all_results)} titles."
     await finalize_message(
         context.bot, msg.chat_id, msg.message_id, "celebrate", success_text
     )
 
-    # 5. Send Menu
     await context.bot.send_message(
         chat_id=msg.chat_id,
         text="👇 <b>Choose your provider:</b>",
@@ -466,7 +422,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # Navigate back to providers
         if data == "show_providers":
             await query.answer("Back to roots...")
             await query.edit_message_text(
@@ -476,13 +431,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # List Games (ls_SOURCE_PAGE)
         if data.startswith("ls_"):
             parts = data.split("_")
             page = int(parts[-1])
             sanitized_source = "_".join(parts[1:-1])
-
-            # UX Toast
             await query.answer(random.choice(TOASTS))
 
             source_name = _find_source_by_sanitized(results, sanitized_source)
@@ -495,23 +447,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # View Details (v_INDEX_PAGE)
         if data.startswith("v_"):
             parts = data.split("_")
             idx = int(parts[1])
             page = int(parts[2])
-
             await query.answer("Fetching data...")
 
             game = results[idx]
             text = format_game_details(game)
-            kb = build_details_keyboard(game, game.get("downloads", []), page)
+
+            # Back data needed for normal mode
+            source = game.get("source", "Unknown")
+            sanitized_source = _sanitize_callback(source)
+            back_data = f"ls_{sanitized_source}_{page}"
+
+            kb = build_download_keyboard(game.get("downloads", []), True, back_data)
 
             await query.edit_message_text(
                 text=text,
                 reply_markup=kb,
                 parse_mode=constants.ParseMode.HTML,
-                disable_web_page_preview=False,  # Allows header image to show
+                disable_web_page_preview=False,
             )
             return
 
@@ -520,14 +476,77 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("🔥 Glitch in the matrix.", show_alert=True)
 
 
+# --- INLINE QUERY HANDLER ---
+async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles @BotName search queries in any chat.
+    """
+    query = update.inline_query.query.strip()
+
+    if len(query) < 3:
+        # Don't search for tiny strings, just return empty or help
+        return
+
+    # Run scrapers (reusing logic)
+    tasks = [
+        steamuground.run_scraper(query),
+        ankergames.run_scraper(query),
+        gamebounty.run_scraper(query),
+    ]
+
+    # We await the results. Note: Inline mode has a strict timeout.
+    # If scrapers are too slow, Telegram will show a network error icon.
+    results_raw = await asyncio.gather(*tasks, return_exceptions=True)
+    all_results = []
+    for r in results_raw:
+        if isinstance(r, list):
+            all_results.extend(r)
+
+    # Limit to top 30 to keep it fast
+    all_results = all_results[:30]
+
+    articles = []
+    for i, game in enumerate(all_results):
+        title = game.get("title", "Unknown Title").replace("Free Download", "")
+        source = game.get("source", "Unknown")
+        image_url = (
+            game.get("image")
+            or game.get("cover_image")
+            or "https://via.placeholder.com/150"
+        )
+
+        # Format the content that will be sent
+        message_text = format_game_details(game)
+
+        # Build Keyboard (Only download links, no Back buttons)
+        kb = build_download_keyboard(game.get("downloads", []), include_back_btn=False)
+
+        article = InlineQueryResultArticle(
+            id=str(uuid.uuid4()),
+            title=title,
+            description=f"Source: {source}",
+            thumbnail_url=image_url
+            if image_url.startswith("http")
+            else "https://img.icons8.com/color/48/console.png",
+            input_message_content=InputTextMessageContent(
+                message_text,
+                parse_mode=constants.ParseMode.HTML,
+                disable_web_page_preview=False,
+            ),
+            reply_markup=kb,
+        )
+        articles.append(article)
+
+    await update.inline_query.answer(articles, cache_time=300)
+
+
 # --- INIT ---
 async def post_init(application: Application):
-    """Sets bot commands automatically on startup."""
     await application.bot.set_my_commands(
         [
             BotCommand("start", "Wake me up"),
             BotCommand("search", "Find a game"),
-            BotCommand("help", "How to use"),
+            BotCommand("help", "Emotional Support"),
         ]
     )
     print("✅ Commands set successfully.")
@@ -550,8 +569,12 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler(["search", "s"], search_command))
     app.add_handler(CommandHandler("help", start_command))
+
+    # ADD INLINE HANDLER
+    app.add_handler(InlineQueryHandler(inline_query))
+
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_error_handler(error_handler)
 
-    print("🚀 Sarcastic Bot Online (Modern Mode)...")
+    print("🚀 Sarcastic Bot Online (Inline + Modern Mode)...")
     app.run_polling()
